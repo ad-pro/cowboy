@@ -24,13 +24,17 @@
 -import(cowboy_test, [raw_recv_head/1]).
 -import(cowboy_test, [raw_recv/3]).
 
+suite() ->
+	[{timetrap, 30000}].
+
 all() -> [{group, http}].
 
 groups() -> [{http, [parallel], ct_helper:all(?MODULE)}].
 
 init_per_group(Name = http, Config) ->
 	cowboy_test:init_http(Name = http, #{
-		env => #{dispatch => cowboy_router:compile(init_routes(Config))}
+		env => #{dispatch => cowboy_router:compile(init_routes(Config))},
+		max_keepalive => 100
 	}, Config).
 
 end_per_group(Name, _) ->
@@ -40,6 +44,7 @@ init_routes(_) -> [
 	{"localhost", [
 		{"/", hello_h, []},
 		{"/echo/:key[/:arg]", echo_h, []},
+		{"/full/:key[/:arg]", echo_h, []},
 		{"/length/echo/:key", echo_h, []},
 		{"/resp/:key[/:arg]", resp_h, []},
 		{"/send_message", send_message_h, []},
@@ -673,6 +678,14 @@ reject_two_sp_between_request_target_and_version(Config) ->
 
 %% Request version.
 
+reject_invalid_version_http09(Config) ->
+	doc("Any version number other than HTTP/1.0 or HTTP/1.1 must be "
+		"rejected by a server or intermediary with a 505 status code. (RFC7230 2.6, RFC7230 A.2)"),
+	#{code := 505} = do_raw(Config,
+		"GET / HTTP/0.9\r\n"
+		"Host: localhost\r\n"
+		"\r\n").
+
 reject_invalid_version_http100(Config) ->
 	doc("Any version number other than HTTP/1.0 or HTTP/1.1 must be "
 		"rejected by a server or intermediary with a 505 status code. (RFC7230 2.6, RFC7230 A.2)"),
@@ -766,21 +779,52 @@ reject_whitespace_before_header_name(Config) ->
 	doc("Messages that contain whitespace before the header name must "
 		"be rejected with a 400 status code and the closing of the "
 		"connection. (RFC7230 3.2.4)"),
-	#{code := 400, client := Client} = do_raw(Config, [
+	#{code := 400, client := Client1} = do_raw(Config, [
 		"GET / HTTP/1.1\r\n"
 		" Host: localhost\r\n"
 		"\r\n"]),
-	{error, closed} = raw_recv(Client, 0, 1000).
+	{error, closed} = raw_recv(Client1, 0, 1000),
+	#{code := 400, client := Client2} = do_raw(Config, [
+		"GET / HTTP/1.1\r\n"
+		"\tHost: localhost\r\n"
+		"\r\n"]),
+	{error, closed} = raw_recv(Client2, 0, 1000).
 
 reject_whitespace_between_header_name_and_colon(Config) ->
 	doc("Messages that contain whitespace between the header name and "
 		"colon must be rejected with a 400 status code and the closing "
 		"of the connection. (RFC7230 3.2.4)"),
-	#{code := 400, client := Client} = do_raw(Config, [
+	#{code := 400, client := Client1} = do_raw(Config, [
 		"GET / HTTP/1.1\r\n"
 		"Host : localhost\r\n"
 		"\r\n"]),
-	{error, closed} = raw_recv(Client, 0, 1000).
+	{error, closed} = raw_recv(Client1, 0, 1000),
+	#{code := 400, client := Client2} = do_raw(Config, [
+		"GET / HTTP/1.1\r\n"
+		"Host\t: localhost\r\n"
+		"\r\n"]),
+	{error, closed} = raw_recv(Client2, 0, 1000).
+
+reject_header_name_without_colon(Config) ->
+	doc("Messages that contain a header name that is not followed by a "
+		"colon must be rejected with a 400 status code and the closing "
+		"of the connection. (RFC7230 3.2.4)"),
+	#{code := 400, client := Client1} = do_raw(Config, [
+		"GET / HTTP/1.1\r\n"
+		"Host\r\n"
+		"\r\n"]),
+	{error, closed} = raw_recv(Client1, 0, 1000),
+	#{code := 400, client := Client2} = do_raw(Config, [
+		"GET / HTTP/1.1\r\n"
+		"Host localhost\r\n"
+		"\r\n"]),
+	{error, closed} = raw_recv(Client2, 0, 1000),
+	#{code := 400, client := Client3} = do_raw(Config, [
+		"GET / HTTP/1.1\r\n"
+		"Host\r\n"
+		" : localhost\r\n"
+		"\r\n"]),
+	{error, closed} = raw_recv(Client3, 0, 1000).
 
 limit_header_name(Config) ->
 	doc("The header name must be subject to a configurable limit. A "
@@ -827,6 +871,17 @@ drop_whitespace_after_header_value(Config) ->
 		"Content-length: 12     \t     \r\n"
 		"\r\n"
 		"Hello world!"]).
+
+reject_lf_line_breaks(Config) ->
+	doc("A server may accept header names separated by a single LF, instead of "
+		"CRLF. Cowboy rejects all requests that use LF as separator. (RFC7230 3.5)"),
+	#{code := 400, client := Client} = do_raw(Config, [
+		"POST /echo/read_body HTTP/1.1\r\n"
+		"Host: localhost\n"
+		"Transfer-encoding: chunked\r\n"
+		"\r\n"
+		"6\r\nHello \r\n5\r\nworld\r\n1\r\n!\r\n0\r\n\r\n"]),
+	{error, closed} = raw_recv(Client, 0, 1000).
 
 %@todo
 %The order of header fields with differing names is not significant. (RFC7230 3.2.2)
@@ -1023,13 +1078,21 @@ reject_non_terminal_chunked(Config) ->
 	doc("Messages where chunked, when present, is not the last "
 		"transfer-encoding must be rejected with a 400 status code "
 		"and the closing of the connection. (RFC7230 3.3.3)"),
-	#{code := 400, client := Client} = do_raw(Config, [
+	#{code := 400, client := Client1} = do_raw(Config, [
 		"POST / HTTP/1.1\r\n"
 		"Host: localhost\r\n"
 		"Transfer-encoding: chunked, gzip\r\n"
 		"\r\n",
 		zlib:gzip(<<"6\r\nHello \r\n5\r\nworld\r\n1\r\n!\r\n0\r\n\r\n">>)]),
-	{error, closed} = raw_recv(Client, 0, 1000).
+	{error, closed} = raw_recv(Client1, 0, 1000),
+	#{code := 400, client := Client2} = do_raw(Config, [
+		"POST / HTTP/1.1\r\n"
+		"Host: localhost\r\n"
+		"Transfer-encoding: chunked\r\n"
+		"Transfer-encoding: gzip\r\n"
+		"\r\n",
+		zlib:gzip(<<"6\r\nHello \r\n5\r\nworld\r\n1\r\n!\r\n0\r\n\r\n">>)]),
+	{error, closed} = raw_recv(Client2, 0, 1000).
 
 %@todo
 %Some non-conformant implementations send the "deflate" compressed
@@ -1039,13 +1102,21 @@ reject_unknown_transfer_encoding(Config) ->
 	doc("Messages encoded with a transfer-encoding the server does not "
 		"understand must be rejected with a 501 status code and the "
 		"closing of the connection. (RFC7230 3.3.1)"),
-	#{code := 400, client := Client} = do_raw(Config, [
+	#{code := 400, client := Client1} = do_raw(Config, [
 		"POST / HTTP/1.1\r\n"
 		"Host: localhost\r\n"
 		"Transfer-encoding: unknown, chunked\r\n"
 		"\r\n",
 		"6\r\nHello \r\n5\r\nworld\r\n1\r\n!\r\n0\r\n\r\n"]),
-	{error, closed} = raw_recv(Client, 0, 1000).
+	{error, closed} = raw_recv(Client1, 0, 1000),
+	#{code := 400, client := Client2} = do_raw(Config, [
+		"POST / HTTP/1.1\r\n"
+		"Host: localhost\r\n"
+		"Transfer-encoding: unknown\r\n"
+		"Transfer-encoding: chunked\r\n"
+		"\r\n",
+		"6\r\nHello \r\n5\r\nworld\r\n1\r\n!\r\n0\r\n\r\n"]),
+	{error, closed} = raw_recv(Client2, 0, 1000).
 
 %@todo
 %A server may reject requests with a body and no content-length
@@ -1487,13 +1558,13 @@ pipeline(Config) ->
 	ConnPid = gun_open(Config),
 	Refs = [{
 		gun:get(ConnPid, "/"),
-		gun:delete(ConnPid, "/echo/method")
+		gun:post(ConnPid, "/full/read_body", [], <<0:80000>>)
 	} || _ <- lists:seq(1, 25)],
 	_ = [begin
-		{response, nofin, 200, _} = gun:await(ConnPid, Ref1),
-		{ok, <<"Hello world!">>} = gun:await_body(ConnPid, Ref1),
-		{response, nofin, 200, _} = gun:await(ConnPid, Ref2),
-		{ok, <<"DELETE">>} = gun:await_body(ConnPid, Ref2)
+		{response, nofin, 200, _} = gun:await(ConnPid, Ref1, infinity),
+		{ok, <<"Hello world!">>} = gun:await_body(ConnPid, Ref1, infinity),
+		{response, nofin, 200, _} = gun:await(ConnPid, Ref2, infinity),
+		{ok, <<0:80000>>} = gun:await_body(ConnPid, Ref2, infinity)
 	end || {Ref1, Ref2} <- Refs],
 	ok.
 
@@ -1815,22 +1886,22 @@ no_body_in_head_response(Config) ->
 %1xx responses never include a message body. (RFC7230 3.3)
 
 no_body_in_204_response(Config) ->
-	doc("204 responses never include a message body. (RFC7230 3.3)"),
+	doc("204 responses never include a message body. Cowboy produces "
+		"a 500 error response when attempting to do so. (RFC7230 3.3)"),
 	Client = raw_open(Config),
 	ok = raw_send(Client, [
-		"GET /resp/reply2/204 HTTP/1.1\r\n"
+		"GET /resp/reply4/204body HTTP/1.1\r\n"
 		"Host: localhost\r\n"
 		"\r\n"]),
-	{_, 204, _, Rest} = cow_http:parse_status_line(raw_recv_head(Client)),
-	{_, <<>>} = cow_http:parse_headers(Rest),
-	{error, timeout} = raw_recv(Client, 1, 1000),
+	{_, 500, _, _} = cow_http:parse_status_line(raw_recv_head(Client)),
 	ok.
 
 no_body_in_204_response_stream(Config) ->
-	doc("204 responses never include a message body. (RFC7230 3.3)"),
+	doc("204 responses never include a message body. Attempting to "
+		"stream the body produces a crash on the server-side. (RFC7230 3.3)"),
 	Client = raw_open(Config),
 	ok = raw_send(Client, [
-		"GET /resp/stream_reply2/204 HTTP/1.1\r\n"
+		"GET /resp/stream_reply2/204body HTTP/1.1\r\n"
 		"Host: localhost\r\n"
 		"\r\n"]),
 	{_, 204, _, Rest} = cow_http:parse_status_line(raw_recv_head(Client)),
@@ -1839,22 +1910,22 @@ no_body_in_204_response_stream(Config) ->
 	ok.
 
 no_body_in_304_response(Config) ->
-	doc("304 responses never include a message body. (RFC7230 3.3)"),
+	doc("304 responses never include a message body. Cowboy produces "
+		"a 500 error response when attempting to do so. (RFC7230 3.3)"),
 	Client = raw_open(Config),
 	ok = raw_send(Client, [
-		"GET /resp/reply2/304 HTTP/1.1\r\n"
+		"GET /resp/reply4/304body HTTP/1.1\r\n"
 		"Host: localhost\r\n"
 		"\r\n"]),
-	{_, 304, _, Rest} = cow_http:parse_status_line(raw_recv_head(Client)),
-	{_, <<>>} = cow_http:parse_headers(Rest),
-	{error, timeout} = raw_recv(Client, 1, 1000),
+	{_, 500, _, _} = cow_http:parse_status_line(raw_recv_head(Client)),
 	ok.
 
 no_body_in_304_response_stream(Config) ->
-	doc("304 responses never include a message body. (RFC7230 3.3)"),
+	doc("304 responses never include a message body. Attempting to "
+		"stream the body produces a crash on the server-side. (RFC7230 3.3)"),
 	Client = raw_open(Config),
 	ok = raw_send(Client, [
-		"GET /resp/stream_reply2/304 HTTP/1.1\r\n"
+		"GET /resp/stream_reply2/304body HTTP/1.1\r\n"
 		"Host: localhost\r\n"
 		"\r\n"]),
 	{_, 304, _, Rest} = cow_http:parse_status_line(raw_recv_head(Client)),

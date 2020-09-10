@@ -33,12 +33,16 @@ groups() ->
 	[{clear, [parallel], Clear}, {tls, [parallel], TLS}].
 
 init_per_group(Name = clear, Config) ->
-	cowboy_test:init_http(Name, #{
-		env => #{dispatch => cowboy_router:compile(init_routes(Config))}
-	}, Config);
+	[{protocol, http2}|cowboy_test:init_http(Name, #{
+		env => #{dispatch => cowboy_router:compile(init_routes(Config))},
+		%% Disable the DATA threshold for this test suite.
+		stream_window_data_threshold => 0
+	}, Config)];
 init_per_group(Name = tls, Config) ->
 	cowboy_test:init_http2(Name, #{
-		env => #{dispatch => cowboy_router:compile(init_routes(Config))}
+		env => #{dispatch => cowboy_router:compile(init_routes(Config))},
+		%% Disable the DATA threshold for this test suite.
+		stream_window_data_threshold => 0
 	}, Config).
 
 end_per_group(Name, _) ->
@@ -49,6 +53,7 @@ init_routes(_) -> [
 		{"/", hello_h, []},
 		{"/echo/:key", echo_h, []},
 		{"/long_polling", long_polling_h, []},
+		{"/loop_handler_abort", loop_handler_abort_h, []},
 		{"/resp/:key[/:arg]", resp_h, []}
 	]}
 ].
@@ -1512,7 +1517,7 @@ rst_stream_reject_frame_size_too_small(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/">>}
+		{<<":path">>, <<"/long_polling">>}
 	]),
 	ok = gen_tcp:send(Socket, [
 		cow_http2:headers(1, fin, HeadersBlock),
@@ -1531,7 +1536,7 @@ rst_stream_reject_frame_size_too_large(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/">>}
+		{<<":path">>, <<"/long_polling">>}
 	]),
 	ok = gen_tcp:send(Socket, [
 		cow_http2:headers(1, fin, HeadersBlock),
@@ -1601,7 +1606,7 @@ push_promise_reject_frame_size_too_small_padded_flag(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/">>}
+		{<<":path">>, <<"/long_polling">>}
 	]),
 	Len = 14 + iolist_size(HeadersBlock),
 	ok = gen_tcp:send(Socket, [
@@ -1794,7 +1799,7 @@ idle_stream_reject_push_promise(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/">>}
+		{<<":path">>, <<"/long_polling">>}
 	]),
 	ok = gen_tcp:send(Socket, cow_http2:push_promise(1, 3, HeadersBlock)),
 	%% Receive a PROTOCOL_ERROR connection error.
@@ -3015,7 +3020,7 @@ window_update_reject_0_stream(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/">>}
+		{<<":path">>, <<"/long_polling">>}
 	]),
 	ok = gen_tcp:send(Socket, [
 		cow_http2:headers(1, fin, HeadersBlock),
@@ -3145,7 +3150,7 @@ window_update_reject_overflow_stream(Config) ->
 		{<<":method">>, <<"GET">>},
 		{<<":scheme">>, <<"http">>},
 		{<<":authority">>, <<"localhost">>}, %% @todo Correct port number.
-		{<<":path">>, <<"/">>}
+		{<<":path">>, <<"/long_polling">>}
 	]),
 	ok = gen_tcp:send(Socket, [
 		cow_http2:headers(1, fin, HeadersBlock),
@@ -3638,6 +3643,54 @@ reject_te_header_other_values(Config) ->
 %   Transfer-Encoding, and Upgrade, even if they are not nominated by the
 %   Connection header field.
 
+response_dont_send_header_in_connection(Config) ->
+	doc("Intermediaries must remove HTTP/1.1 connection headers when "
+		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
+		"not send them either. All headers listed in the connection "
+		"header must be removed. (RFC7540 8.1.2.2)"),
+	do_response_dont_send_http11_header(Config, <<"custom-header">>).
+
+response_dont_send_connection_header(Config) ->
+	doc("Intermediaries must remove HTTP/1.1 connection headers when "
+		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
+		"not send them either. The connection header must be removed. (RFC7540 8.1.2.2)"),
+	do_response_dont_send_http11_header(Config, <<"connection">>).
+
+response_dont_send_keep_alive_header(Config) ->
+	doc("Intermediaries must remove HTTP/1.1 connection headers when "
+		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
+		"not send them either. The keep-alive header must be removed "
+		"even if not listed in the connection header. (RFC7540 8.1.2.2)"),
+	do_response_dont_send_http11_header(Config, <<"keep-alive">>).
+
+response_dont_send_proxy_connection_header(Config) ->
+	doc("Intermediaries must remove HTTP/1.1 connection headers when "
+		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
+		"not send them either. The proxy-connection header must be removed "
+		"even if not listed in the connection header. (RFC7540 8.1.2.2)"),
+	do_response_dont_send_http11_header(Config, <<"proxy-connection">>).
+
+response_dont_send_transfer_encoding_header(Config) ->
+	doc("Intermediaries must remove HTTP/1.1 connection headers when "
+		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
+		"not send them either. The transfer-encoding header must be removed "
+		"even if not listed in the connection header. (RFC7540 8.1.2.2)"),
+	do_response_dont_send_http11_header(Config, <<"transfer-encoding">>).
+
+response_dont_send_upgrade_header(Config) ->
+	doc("Intermediaries must remove HTTP/1.1 connection headers when "
+		"transforming an HTTP/1.1 messages to HTTP/2. The server must "
+		"not send them either. The upgrade header must be removed "
+		"even if not listed in the connection header. (RFC7540 8.1.2.2)"),
+	do_response_dont_send_http11_header(Config, <<"upgrade">>).
+
+do_response_dont_send_http11_header(Config, Name) ->
+	ConnPid = gun_open(Config),
+	Ref = gun:get(ConnPid, "/resp/set_resp_headers_http11"),
+	{response, nofin, 200, Headers} = gun:await(ConnPid, Ref),
+	false = lists:keyfind(Name, 1, Headers),
+	ok.
+
 reject_userinfo(Config) ->
 	doc("An authority containing a userinfo component must be rejected "
 		"with a PROTOCOL_ERROR stream error. (RFC7540 8.1.2.3, RFC7540 8.1.2.6)"),
@@ -3990,6 +4043,18 @@ reject_duplicate_content_length_header(Config) ->
 %   A client cannot push.  Thus, servers MUST treat the receipt of a
 %   PUSH_PROMISE frame as a connection error (Section 5.4.1) of type
 %   PROTOCOL_ERROR.
+
+push_has_no_request_body(Config) ->
+	doc("PUSH_PROMISE frames include the complete set of request headers "
+		"and the request can never include a body. (RFC7540 8.2.1)"),
+	ConnPid = gun_open(Config),
+	Ref = gun:get(ConnPid, "/resp/push/read_body"),
+	{push, PushRef, <<"GET">>, _, _} = gun:await(ConnPid, Ref),
+	{response, fin, 200, _} = gun:await(ConnPid, Ref),
+	%% We should not get a body in the pushed resource
+	%% since there was no body in the request.
+	{response, fin, 200, _} = gun:await(ConnPid, PushRef),
+	ok.
 
 %% (RFC7540 8.2.1)
 %   The header fields in PUSH_PROMISE and any subsequent CONTINUATION

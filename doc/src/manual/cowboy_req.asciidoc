@@ -53,6 +53,7 @@ Processed request:
 * link:man:cowboy_req:parse_qs(3)[cowboy_req:parse_qs(3)] - Parse the query string
 * link:man:cowboy_req:match_qs(3)[cowboy_req:match_qs(3)] - Match the query string against constraints
 * link:man:cowboy_req:parse_header(3)[cowboy_req:parse_header(3)] - Parse the given HTTP header
+* link:man:cowboy_req:filter_cookies(3)[cowboy_req:filter_cookies(3)] - Filter cookie headers
 * link:man:cowboy_req:parse_cookies(3)[cowboy_req:parse_cookies(3)] - Parse cookie headers
 * link:man:cowboy_req:match_cookies(3)[cowboy_req:match_cookies(3)] - Match cookies against constraints
 * link:man:cowboy_req:binding(3)[cowboy_req:binding(3)] - Access a value bound from the route
@@ -88,6 +89,10 @@ Response:
 * link:man:cowboy_req:stream_events(3)[cowboy_req:stream_events(3)] - Stream events
 * link:man:cowboy_req:stream_trailers(3)[cowboy_req:stream_trailers(3)] - Send the response trailers
 * link:man:cowboy_req:push(3)[cowboy_req:push(3)] - Push a resource to the client
+
+Stream handlers:
+
+* link:man:cowboy_req:cast(3)[cowboy_req:cast(3)] - Cast a stream handler event
 
 == Types
 
@@ -156,7 +161,7 @@ them by prepending an underscore and the name of your application:
 .Setting a custom field
 [source,erlang]
 ----
-Req#{_myapp_auth_method => pubkey}.
+Req#{'_myapp_auth_method' => pubkey}.
 ----
 
 === resp_body()

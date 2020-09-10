@@ -112,6 +112,10 @@ Send a response to the client.
 
 No more data can be sent after this command.
 
+Note that in Cowboy it is the `cowboy_req` module that
+sets the date and server headers. When using the command
+directly those headers will not be added.
+
 [[headers_command]]
 === headers
 
@@ -125,6 +129,10 @@ Initiate a response to the client.
 This initiates a response to the client. The stream
 will end when a data command with the `fin` flag or
 a trailer command is returned.
+
+Note that in Cowboy it is the `cowboy_req` module that
+sets the date and server headers. When using the command
+directly those headers will not be added.
 
 [[data_command]]
 === data
@@ -245,13 +253,40 @@ because of an internal error. An `error_response` command
 may be sent before that to advertise to the client why the
 stream is dropped.
 
+=== log
+
+Log a message.
+
+[source,erlang]
+----
+{log, logger:level(), io:format(), list()}
+----
+
+This command can be used to log a message using the
+configured `logger` module.
+
+=== set_options
+
+Set protocol options.
+
+[source,erlang]
+----
+{set_options, map()}
+----
+
+This can also be used to override stream handler
+options. For example this is supported by
+link:man:cowboy_compress_h(3)[cowboy_compress_h(3)].
+
+Not all options can be overriden. Please consult the
+relevant option's documentation for details.
+
 == Predefined events
 
 Cowboy will forward all messages sent to the stream to
 the `info/3` callback. To send a message to a stream,
-send a message to the connection process with the form
-`{{Pid, StreamID}, Msg}`. The connection process will
-then forward `Msg` to the stream handlers.
+the function link:man:cowboy_req:cast(3)[cowboy_req:cast(3)]
+can be used.
 
 Cowboy will also forward the exit signals for the
 processes that the stream spawned.
@@ -365,13 +400,15 @@ tuple.
 
 == Changelog
 
-* *2.6*: The data command can now contain a sendfile tuple.
+* *2.7*: The `log` and `set_options` commands were introduced.
+* *2.6*: The `data` command can now contain a sendfile tuple.
 * *2.6*: The `{stop, {exit, any()}, HumanReadable}` terminate reason was added.
-* *2.2*: The trailers command was introduced.
+* *2.2*: The `trailers` command was introduced.
 * *2.0*: Module introduced.
 
 == See also
 
 link:man:cowboy(7)[cowboy(7)],
 link:man:cowboy_http(3)[cowboy_http(3)],
-link:man:cowboy_http2(3)[cowboy_http2(3)]
+link:man:cowboy_http2(3)[cowboy_http2(3)],
+link:man:cowboy_req:cast(3)[cowboy_req:cast(3)]

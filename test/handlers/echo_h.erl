@@ -30,6 +30,16 @@ echo(<<"read_body">>, Req0, Opts) ->
 			Length = cowboy_req:body_length(Req1),
 			{ok, integer_to_binary(Length), Req1};
 		<<"/opts", _/bits>> -> cowboy_req:read_body(Req0, Opts);
+		<<"/spawn", _/bits>> ->
+			Parent = self(),
+			Pid = spawn_link(fun() ->
+				Parent ! {self(), cowboy_req:read_body(Req0)}
+			end),
+			receive
+				{Pid, Msg} -> Msg
+			after 5000 ->
+				error(timeout)
+			end;
 		_ -> cowboy_req:read_body(Req0)
 	end,
 	{ok, cowboy_req:reply(200, #{}, Body, Req), Opts};
@@ -81,6 +91,10 @@ echo(<<"match">>, Req, Opts) ->
 			{ok, Match, _} = cowboy_req:read_and_match_urlencoded_body(Fields, Req),
 			Match
 	end,
+	{ok, cowboy_req:reply(200, #{}, value_to_iodata(Value), Req), Opts};
+echo(<<"filter_then_parse_cookies">>, Req0, Opts) ->
+	Req = cowboy_req:filter_cookies([cake, color], Req0),
+	Value = cowboy_req:parse_cookies(Req),
 	{ok, cowboy_req:reply(200, #{}, value_to_iodata(Value), Req), Opts};
 echo(What, Req, Opts) ->
 	Key = binary_to_atom(What, latin1),
